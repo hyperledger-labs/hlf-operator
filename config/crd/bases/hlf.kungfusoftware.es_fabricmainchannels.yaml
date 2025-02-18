@@ -319,6 +319,12 @@ spec:
                       items:
                         type: string
                       type: array
+                    revocationList:
+                      default: []
+                      items:
+                        type: string
+                      nullable: true
+                      type: array
                     signRootCert:
                       type: string
                     tlsRootCert:
@@ -399,6 +405,12 @@ spec:
                         - name
                         - namespace
                         type: object
+                      type: array
+                    revocationList:
+                      default: []
+                      items:
+                        type: string
+                      nullable: true
                       type: array
                     signCACert:
                       type: string
