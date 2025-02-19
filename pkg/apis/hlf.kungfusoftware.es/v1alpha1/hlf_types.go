@@ -2688,6 +2688,11 @@ type FabricMainChannelExternalOrdererOrganization struct {
 	SignRootCert string `json:"signRootCert"`
 	// Orderer endpoints for the organization in the channel configuration
 	OrdererEndpoints []string `json:"ordererEndpoints"`
+	// +optional
+	// +nullable
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default:={}
+	RevocationList []string `json:"revocationList"`
 }
 type OrgCertsRef struct {
 }
@@ -2720,6 +2725,11 @@ type FabricMainChannelOrdererOrganization struct {
 	// +optional
 	// Root certificate authority for signing
 	SignCACert string `json:"signCACert"`
+	// +optional
+	// +nullable
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default:={}
+	RevocationList []string `json:"revocationList"`
 	// Orderer endpoints for the organization in the channel configuration
 	OrdererEndpoints []string `json:"ordererEndpoints"`
 	// Orderer nodes within the kubernetes cluster to be added to the channel

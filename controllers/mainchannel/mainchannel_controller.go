@@ -826,6 +826,7 @@ func (r *FabricMainChannelReconciler) mapToConfigTX(channel *hlfv1alpha1.FabricM
 	for _, ordererOrg := range channel.Spec.OrdererOrganizations {
 		var tlsCACert *x509.Certificate
 		var caCert *x509.Certificate
+
 		if ordererOrg.CAName != "" && ordererOrg.CANamespace != "" {
 			certAuth, err := helpers.GetCertAuthByName(
 				clientSet,
@@ -854,7 +855,20 @@ func (r *FabricMainChannelReconciler) mapToConfigTX(channel *hlfv1alpha1.FabricM
 				return configtx.Channel{}, err
 			}
 		}
-		ordererOrgs = append(ordererOrgs, r.mapOrdererOrg(ordererOrg.MSPID, ordererOrg.OrdererEndpoints, caCert, tlsCACert))
+
+		// Parse revocation list if provided
+		revocationList := []*pkix.CertificateList{}
+		if len(ordererOrg.RevocationList) > 0 {
+			for _, revocation := range ordererOrg.RevocationList {
+				crl, err := utils.ParseCRL([]byte(revocation))
+				if err != nil {
+					return configtx.Channel{}, errors.Wrapf(err, "failed to parse revocation list for orderer org %s", ordererOrg.MSPID)
+				}
+				revocationList = append(revocationList, crl)
+			}
+		}
+
+		ordererOrgs = append(ordererOrgs, r.mapOrdererOrg(ordererOrg.MSPID, ordererOrg.OrdererEndpoints, caCert, tlsCACert, revocationList))
 	}
 	for _, ordererOrg := range channel.Spec.ExternalOrdererOrganizations {
 		tlsCACert, err := utils.ParseX509Certificate([]byte(ordererOrg.TLSRootCert))
@@ -865,7 +879,15 @@ func (r *FabricMainChannelReconciler) mapToConfigTX(channel *hlfv1alpha1.FabricM
 		if err != nil {
 			return configtx.Channel{}, err
 		}
-		ordererOrgs = append(ordererOrgs, r.mapOrdererOrg(ordererOrg.MSPID, ordererOrg.OrdererEndpoints, caCert, tlsCACert))
+		revocationList := []*pkix.CertificateList{}
+		for _, revocation := range ordererOrg.RevocationList {
+			crl, err := utils.ParseCRL([]byte(revocation))
+			if err != nil {
+				return configtx.Channel{}, err
+			}
+			revocationList = append(revocationList, crl)
+		}
+		ordererOrgs = append(ordererOrgs, r.mapOrdererOrg(ordererOrg.MSPID, ordererOrg.OrdererEndpoints, caCert, tlsCACert, revocationList))
 	}
 	etcdRaftOptions := orderer.EtcdRaftOptions{
 		TickInterval:         "500ms",
@@ -1160,7 +1182,8 @@ func (r *FabricMainChannelReconciler) mapPolicy(
 	}
 	return policiesMap
 }
-func (r *FabricMainChannelReconciler) mapOrdererOrg(mspID string, ordererEndpoints []string, caCert *x509.Certificate, tlsCACert *x509.Certificate) configtx.Organization {
+
+func (r *FabricMainChannelReconciler) mapOrdererOrg(mspID string, ordererEndpoints []string, caCert *x509.Certificate, tlsCACert *x509.Certificate, revocationList []*pkix.CertificateList) configtx.Organization {
 	return configtx.Organization{
 		Name: mspID,
 		Policies: map[string]configtx.Policy{
@@ -1206,7 +1229,7 @@ func (r *FabricMainChannelReconciler) mapOrdererOrg(mspID string, ordererEndpoin
 			},
 			Admins:                        []*x509.Certificate{},
 			IntermediateCerts:             []*x509.Certificate{},
-			RevocationList:                []*pkix.CertificateList{},
+			RevocationList:                revocationList,
 			OrganizationalUnitIdentifiers: []membership.OUIdentifier{},
 			CryptoConfig:                  membership.CryptoConfig{},
 			TLSIntermediateCerts:          []*x509.Certificate{},
@@ -1336,13 +1359,14 @@ func updateApplicationChannelConfigTx(currentConfigTX configtx.ConfigTx, newConf
 			}
 		}
 		if !found {
-			log.Infof("Adding organization %s", organization.Name)
+			log.Infof("Adding organization %v", organization)
 			err = currentConfigTX.Application().SetOrganization(organization)
 			if err != nil {
 				return errors.Wrapf(err, "failed to set organization %s", organization.Name)
 			}
 		}
 	}
+
 	err = currentConfigTX.Application().SetPolicies(
 		newConfigTx.Application.Policies,
 	)
@@ -1438,20 +1462,20 @@ func updateOrdererChannelConfigTx(currentConfigTX configtx.ConfigTx, newConfigTx
 			deleted := true
 			needsUpdate := false
 			var matchingNewConsenter orderer.Consenter
-			
+
 			for _, newConsenter := range newConfigTx.Orderer.EtcdRaft.Consenters {
 				if newConsenter.Address.Host == consenter.Address.Host && newConsenter.Address.Port == consenter.Address.Port {
 					deleted = false
 					matchingNewConsenter = newConsenter
 					// Check if TLS certs are different
-					if !bytes.Equal(newConsenter.ClientTLSCert.Raw, consenter.ClientTLSCert.Raw) || 
-					   !bytes.Equal(newConsenter.ServerTLSCert.Raw, consenter.ServerTLSCert.Raw) {
+					if !bytes.Equal(newConsenter.ClientTLSCert.Raw, consenter.ClientTLSCert.Raw) ||
+						!bytes.Equal(newConsenter.ServerTLSCert.Raw, consenter.ServerTLSCert.Raw) {
 						needsUpdate = true
 					}
 					break
 				}
 			}
-			
+
 			if deleted {
 				log.Infof("Removing consenter %s:%d", consenter.Address.Host, consenter.Address.Port)
 				err = currentConfigTX.Orderer().RemoveConsenter(consenter)
@@ -1644,6 +1668,12 @@ func updateOrdererChannelConfigTx(currentConfigTX configtx.ConfigTx, newConfigTx
 				if err != nil {
 					return errors.Wrapf(err, "failed to add endpoint %s", endpoint)
 				}
+			}
+
+			ordConfig.MSP.RevocationList = organization.MSP.RevocationList
+			err = currentConfigTX.Orderer().Organization(organization.Name).SetMSP(ordConfig.MSP)
+			if err != nil {
+				return errors.Wrapf(err, "failed to set organization %s", organization.Name)
 			}
 		} else {
 			log.Infof("Adding organization %s", organization.Name)

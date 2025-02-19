@@ -293,14 +293,8 @@ func (r *FabricFollowerChannelReconciler) Reconcile(ctx context.Context, req ctr
 	}
 
 	r.Log.Info("Setting CRL configuration")
-
-	msp := app.MSP()
-	mspConf, err := msp.Configuration()
-	if err != nil {
-		r.setConditionStatus(ctx, fabricFollowerChannel, hlfv1alpha1.FailedStatus, false, err, false)
-		return r.updateCRStatusOrFailReconcile(ctx, r.Log, fabricFollowerChannel)
-	}
 	var revocationList []*pkix.CertificateList
+	// Then add the new CRLs
 	for _, revocation := range fabricFollowerChannel.Spec.RevocationList {
 		crl, err := utils.ParseCRL([]byte(revocation))
 		if err != nil {
@@ -309,14 +303,30 @@ func (r *FabricFollowerChannelReconciler) Reconcile(ctx context.Context, req ctr
 		}
 		revocationList = append(revocationList, crl)
 	}
-	mspConf.RevocationList = revocationList
-	err = app.SetMSP(mspConf)
+
+	org, err := cftxGen.Application().Organization(mspID).Configuration()
 	if err != nil {
 		r.setConditionStatus(ctx, fabricFollowerChannel, hlfv1alpha1.FailedStatus, false, err, false)
 		return r.updateCRStatusOrFailReconcile(ctx, r.Log, fabricFollowerChannel)
 	}
+	org.MSP.RevocationList = revocationList
+	err = cftxGen.Application().SetOrganization(org)
+	if err != nil {
+		r.setConditionStatus(ctx, fabricFollowerChannel, hlfv1alpha1.FailedStatus, false, err, false)
+		return r.updateCRStatusOrFailReconcile(ctx, r.Log, fabricFollowerChannel)
+	}
+
 	r.Log.Info("CRL configuration set")
 	r.Log.Info("Updating channel configuration")
+	updatedConfig := cftxGen.UpdatedConfig()
+	// convert to json and print it as log
+	var buf3 bytes.Buffer
+	err = protolator.DeepMarshalJSON(&buf3, updatedConfig)
+	if err != nil {
+		r.setConditionStatus(ctx, fabricFollowerChannel, hlfv1alpha1.FailedStatus, false, err, false)
+		return r.updateCRStatusOrFailReconcile(ctx, r.Log, fabricFollowerChannel)
+	}
+	r.Log.Info(fmt.Sprintf("Updated config: %s", buf2.String()))
 	configUpdateBytes, err := cftxGen.ComputeMarshaledUpdate(fabricFollowerChannel.Spec.Name)
 	if err != nil {
 		if !strings.Contains(err.Error(), "no differences detected between original and updated config") {
